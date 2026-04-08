@@ -1,0 +1,232 @@
+---
+title: "Analysis of home bias in the 21-22 Premier League season"
+author: "Jiale"
+date: "2026-04-05"
+output: 
+  html_document:
+    toc: true
+    theme: united
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+```
+
+## 1. Background
+
+Home advantage in football is a well-known phenomenon. Many fans believe that referees unconsciously favor the home team, influenced by crowd pressure. With the introduction and widespread use of VAR, this referee bias was expected to decrease significantly.
+
+**In this short analysis, I used the 2021/22 Premier League data from TidyTuesday to investigate whether referees still show a clear home bias in issuing yellow and red cards.**
+
+## 2. Exploratory Data Analysis
+
+First, we need to read and view the data.
+
+```{r data_import}
+soccer <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2023/2023-04-04/soccer21-22.csv')
+head(soccer)
+```
+
+To account for the fact that different teams have very different playing styles and foul frequencies, simply comparing the raw number of yellow or red cards between home and away teams can be misleading. Therefore, we use a normalized metric called **Card Rate**:
+
+$$Card\_Rate = \frac{Yellow\_Cards + 2 \times Red\_Cards}{Total\_Fouls}$$
+
+This represents the probability (or rate) that a team receives a card for each foul they commit.
+
+In the exploratory data analysis (EDA), we further broke down the data by referee to check whether individual referees showed any consistent differences in card rates between home and away teams.
+
+```{r eda}
+
+#Different referees' home and away card ratios
+bias_data_Referee <-soccer |> 
+  group_by(Referee) |> 
+  summarise(
+    Average_Home_Fouls = sum (HF)/n(),
+    Average_Home_Yellows = sum(HY)/n(),
+    Average_Home_Reds = sum(HR)/n(),
+    Average_Away_Fouls = sum (AF)/n(),
+    Average_Away_Yellows = sum(AY)/n(),
+    Average_Away_Reds = sum(AR)/n(),
+    Home_rate = (Average_Home_Yellows+2*Average_Home_Reds)/Average_Home_Fouls,
+    Away_rate = (Average_Away_Yellows+2*Average_Away_Reds)/Average_Away_Fouls,
+    number_of_games =n()
+  )
+
+
+bias_data_Referee |> 
+  filter(number_of_games>=5) |> 
+  pivot_longer(cols = c(Home_rate, Away_rate), names_to = "Role", values_to = "Card_Rate") |> 
+  ggplot(aes(y=Referee,x=Card_Rate,colour = Role,group=Role))+
+  geom_path()+
+  geom_point()
+```
+
+From the plots, we can see that among referees who officiated more than five matches, the card rates for home and away teams are generally quite close. However, a few referees appear to show some signs of home bias (for example, R Jones).
+This suggests that home bias is not a widespread phenomenon, but it may still exist to a small extent among certain referees. Next, we will use statistical tests to further validate this observation.
+
+## 2. Overall Test
+
+First, to determine whether home bias is a widespread phenomenon in the Premier League, we need to compare the card rates of home and away teams across all matches.
+
+To do this, we calculated the card rate for the home team and the away team in every single match, then examined the differences between them. We performed both a paired t-test and a Wilcoxon signed-rank test to assess these differences.
+
+```{r overall_test}
+
+match_analysis <-soccer |>
+  mutate(
+    # If there is no foul, the probability of giving a card is 0.
+    Home_Rate = ifelse(HF > 0, (HY+2*HR) / HF, 0),
+    Away_Rate = ifelse(AF > 0, (AY+2*AR) / AF, 0),
+    Rate_Diff = Away_Rate - Home_Rate
+  ) 
+  
+t.test(match_analysis$Home_Rate, match_analysis$Away_Rate, paired = TRUE)
+wilcox.test(match_analysis$Home_Rate, match_analysis$Away_Rate, paired = TRUE)
+```
+
+We can see that for both the paired t-test and the Wilcoxon signed-rank test, the p-values are above 0.1. This indicates that, overall, there is no statistically significant difference in card rates between home and away teams.
+
+Some readers might look at the p-value around 0.1 and think: “It’s close to 0.05, so maybe there is still some meaningful bias?”
+However, this is largely due to the relatively large sample size (380 matches). With a large n, even tiny differences can produce p-values that appear somewhat low.
+To better understand the practical importance, we should look at the actual magnitude of the difference:
+
+```{r get_mean}
+mean(match_analysis$Rate_Diff,  na.rm=TRUE)
+```
+
+The average difference in card rates (Away_Rate - Home_Rate) across all matches is only 0.0145.
+This means that, even if a small home bias exists, a team would need to commit roughly 70 fouls for the away team to receive just one extra card compared to the home team. In the context of real football matches, this difference is negligible and has very little practical impact.
+
+Therefore, at the league-wide level, we can reasonably say that home bias in card rates does not exist — or at the very least, it is not a common phenomenon in the 2021/22 season.
+
+## 3. Test by Referees
+
+However, the lack of significant home bias at the league level does not rule out the possibility that it exists for specific referees.
+
+In the Premier League — and many other leagues — certain referees have gained a reputation among fans for favoring the home team. This raises an important question: do some referees indeed show a stronger tendency toward home bias?
+
+To answer this, we performed separate hypothesis tests for each referee who officiated at least 10 matches, comparing their home and away card rates.
+
+```{r referee_test}
+referee_test <- match_analysis |>
+  group_by(Referee) |>
+  filter(n() >= 10) |>  # Filter out referees with insufficient officiating experience
+  summarise(
+    n_games = n(),
+    mean_home = mean(Home_Rate),
+    mean_away = mean(Away_Rate),
+    # Calculate the p-value for a paired test.
+    p_val = t.test(Home_Rate, Away_Rate, paired = TRUE)$p.value,
+    bias_score = mean_away - mean_home
+  ) |>
+  arrange(p_val) 
+
+referee_test |> 
+  select(Referee,p_val) |> 
+  print()
+
+```
+
+From the results, we can see that if we set the significance level at α = 0.05, none of the referees show a statistically significant home bias in card rates.
+
+However, if we relax the threshold to α = 0.1, D England appears to exhibit a notable home bias. Even so, it would be unfair to immediately conclude that D England is guilty of blowing a “home whistle.”
+
+It is important to note that we used Fisher’s LSD without any multiple comparison correction. When performing 18 independent hypothesis tests at α = 0.1, the probability of making at least one Type I error (false positive) rises to approximately 85% (calculated as $1 − (1 − 0.1)^{18}$ ).
+
+In this context, it is difficult to determine whether the significant result for D England reflects a genuine bias or is simply the result of inflated error rates due to multiple testing. Similarly, it is hard to know how many of these tests are truly capable of reliably detecting real differences.
+
+Nevertheless, D England’s case cannot be completely ignored. Therefore, we need to examine the possibility of home bias from other perspectives, which we will explore in the next two sections.
+
+## 4. When the Home Team is Trailing at Halftime
+From experience, there is one situation where referees are often thought to be more likely to show home bias — when the home team is losing at halftime. Both fans and players hate losing at home, which creates greater pressure on the referee.
+To investigate this, we filtered the data by halftime result and examined card rate differences for each referee：
+
+```{r hrt}
+htr_impact <- match_analysis |>
+  group_by(Referee, HTR) |>
+  summarise(
+    avg_home_rate = mean(Home_Rate),
+    avg_away_rate = mean(Away_Rate),
+    count = n()
+  )
+
+# Visualization difference in card rate under different half scores
+ggplot(htr_impact, aes(x = HTR, y = avg_away_rate - avg_home_rate, fill = HTR)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Referee) +
+  labs(title = "Difference in card rate under different half scores (Away - Home)") |> 
+  print()
+
+```
+
+Here, A means the away team is leading at halftime, D means the score is tied, and H means the home team is leading. The y-axis represents the difference in card rates (Away Rate − Home Rate).
+
+From the visualization, we can see that for most referees, the differences remain reasonable. Even D England, whom we previously flagged, kept the difference below 0.1.
+
+However, S Attwell stands out noticeably. After checking the raw data, we found that S Attwell officiated very few matches where the away team was leading or the score was tied at halftime. This small sample size introduces considerable randomness, making his result less reliable.
+
+Unfortunately, although 18 referees officiated at least 10 matches overall, once we split the data by halftime result, the sample size in each subgroup became too small to perform reliable individual tests. Therefore, we pooled all referees together to examine whether, at the league level, there is any tendency for referees to “compensate” the home team when they are trailing at halftime.
+
+```{r hrt_test}
+home_trailing <- match_analysis |> filter(HTR == "A")
+
+
+t.test(home_trailing$Home_Rate, home_trailing$Away_Rate, paired = TRUE)
+
+```
+
+We can see that the p-value is as high as 0.7. Clearly, we cannot conclude that there is any compensatory home bias at the league level when the home team is trailing at halftime.
+
+## 5. Accounting for Team Strength
+
+Finally, we need to consider the relative strength of the two teams as an important confounding factor.
+Weaker teams often need to commit more tactical fouls to disrupt stronger opponents’ attacking opportunities. These fouls tend to be more aggressive and are therefore more likely to result in cards. If a referee happens to officiate many matches where a strong home team faces a weak away team, their apparent “home bias” might actually be inflated by this imbalance rather than true referee bias.
+To address this, we introduced the **Strength_Diff** variable, calculated as the difference in final season points between the home and away teams. This serves as a proxy for the strength gap between the two sides.
+We then performed a regression analysis with **Rate_Diff** (Away Rate − Home Rate) as the dependent variable, using both **Strength_Diff** and **Referee** as predictors. This allowed us to examine whether referees still show a significant difference in card rates between home and away teams after controlling for team strength differences.
+
+```{r strength_test}
+team_points <- soccer |> 
+  mutate(
+    home_p = case_when(FTR == "H" ~ 3, FTR == "D" ~ 1, TRUE ~ 0),
+    away_p = case_when(FTR == "A" ~ 3, FTR == "D" ~ 1, TRUE ~ 0)
+  )
+standing <- bind_rows(
+  team_points |>  select(Team = HomeTeam, Pts = home_p),
+  team_points |>  select(Team = AwayTeam, Pts = away_p)
+) |>
+  group_by(Team)  |> 
+  summarise(Season_Pts = sum(Pts)) |>
+  arrange(desc(Season_Pts))
+
+match_analysis<- match_analysis|> 
+  left_join(standing, by = c("HomeTeam" = "Team")) |> 
+  rename(Home_Season_Pts = Season_Pts) |> 
+  left_join(standing, by = c("AwayTeam" = "Team")) |> 
+  rename(Away_Season_Pts = Season_Pts) |> 
+  mutate(Strength_Diff = Home_Season_Pts - Away_Season_Pts)
+
+
+bias_model <- lm(Rate_Diff ~ Referee + Strength_Diff, data = match_analysis)
+
+summary(bias_model)
+```
+
+After controlling for team strength differences, none of the referees had a statistically significant effect on Rate_Diff. This means there is no evidence of home bias once we account for the quality gap between teams.
+
+As expected, Strength_Diff was a significant predictor, confirming that stronger teams tend to receive fewer cards relative to their foul count.
+
+However, the model’s R-squared was only 0.05, indicating that team strength explains just 5% of the variation in card rate differences. This further supports the conclusion that referees are not systematically favoring one side over the other.
+
+## 6. Conclusion and limitation
+
+In summary, based on the 2021/22 Premier League data, we can reasonably conclude that home bias in card rates is not a common or systematic phenomenon in the league. Referees seem able to make relatively impartial decisions even under the pressure of home crowds.
+
+However, a small number of referees still show some signs of potential home bias. These cases warrant further investigation with more data and refined methods.
+
+This analysis is relatively simple and has several limitations, including but not limited to:
+
+  1.We assumed that every foul has an equal probability of resulting in a card. In reality, playing style, player aggression, and tactical approach can significantly influence card rates. Incorporating individual player-level data would provide a more accurate picture.
+  
+  2.We only examined card rates (yellow and red cards per foul) as a measure of home bias. However, referee home bias can manifest in many other ways, such as penalty decisions, added time, or the timing and strictness of foul calls. Relying solely on card rates may miss important aspects of potential bias.
