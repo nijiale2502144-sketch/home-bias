@@ -110,8 +110,6 @@ mean(match_analysis$Away_Rate - match_analysis$Home_Rate, na.rm=TRUE)
 mean(match_analysis$Rate_Diff, na.rm=TRUE)
 
 
-sb<-soccer |> 
-  filter(Referee=="D England")
 
 bias_model <- lm(Rate_Diff ~ Referee + Strength_Diff, data = match_analysis)
 
